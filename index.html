@@ -70,9 +70,10 @@ const COLORS = {
 };
 
 const BASE_RATING = 1000, POINTS_PER_WIN = 25, POINTS_PER_LOSS = 15;
-function computeRating(wins, losses) {
-  const w = Number(wins) || 0, l = Number(losses) || 0;
-  return BASE_RATING + w * POINTS_PER_WIN - l * POINTS_PER_LOSS;
+const PLACE_BONUS = { 1: 100, 2: 50, 3: 30 };
+function computeRating(wins, losses, bonus) {
+  const w = Number(wins) || 0, l = Number(losses) || 0, b = Number(bonus) || 0;
+  return BASE_RATING + w * POINTS_PER_WIN - l * POINTS_PER_LOSS + b;
 }
 
 function emptyPlayer() {
@@ -91,7 +92,7 @@ const TOURNAMENT_STATUSES = [
 function statusMeta(id) { return TOURNAMENT_STATUSES.find((s) => s.id === id) || TOURNAMENT_STATUSES[0]; }
 
 function emptyTournament() {
-  return { id: null, title: "", description: "", start_time: "", location: "бар «Легенды», г. Югорск", status: "open" };
+  return { id: null, title: "", description: "", start_time: "", location: "бар «Легенды», г. Югорск", status: "open", first_place_id: null, second_place_id: null, third_place_id: null };
 }
 
 function formatTournamentDate(iso) {
@@ -311,6 +312,22 @@ function App() {
   function openNewTournamentForm() { setTournamentDraft(emptyTournament()); setShowTournamentForm(true); }
   function openEditTournamentForm(t) { setTournamentDraft({ ...t, start_time: t.start_time ? t.start_time.slice(0, 16) : "" }); setShowTournamentForm(true); }
 
+  async function applyPlacementBonusDeltas(oldPlacements, newPlacements) {
+    const deltas = {};
+    const add = (id, amt) => { if (id) deltas[id] = (deltas[id] || 0) + amt; };
+    [1, 2, 3].forEach((place) => {
+      const oldId = oldPlacements[place], newId = newPlacements[place];
+      if (oldId !== newId) { add(oldId, -PLACE_BONUS[place]); add(newId, PLACE_BONUS[place]); }
+    });
+    const ids = Object.keys(deltas).filter((id) => deltas[id] !== 0);
+    if (!ids.length) return;
+    const { data: rows } = await db.from("players").select("id, bonus_points").in("id", ids);
+    for (const row of rows || []) {
+      const next = Math.max(0, (row.bonus_points || 0) + deltas[row.id]);
+      await db.from("players").update({ bonus_points: next }).eq("id", row.id);
+    }
+  }
+
   async function saveDraftTournament() {
     if (!tournamentDraft.title.trim() || !tournamentDraft.start_time) return;
     setSavingTournament(true);
@@ -318,20 +335,32 @@ function App() {
       title: tournamentDraft.title, description: tournamentDraft.description,
       start_time: new Date(tournamentDraft.start_time).toISOString(),
       location: tournamentDraft.location, status: tournamentDraft.status,
+      first_place_id: tournamentDraft.first_place_id || null,
+      second_place_id: tournamentDraft.second_place_id || null,
+      third_place_id: tournamentDraft.third_place_id || null,
     };
+    let oldPlacements = { 1: null, 2: null, 3: null };
+    if (tournamentDraft.id) {
+      const { data: prev } = await db.from("tournaments").select("first_place_id, second_place_id, third_place_id").eq("id", tournamentDraft.id).single();
+      if (prev) oldPlacements = { 1: prev.first_place_id, 2: prev.second_place_id, 3: prev.third_place_id };
+    }
+    const newPlacements = { 1: payload.first_place_id, 2: payload.second_place_id, 3: payload.third_place_id };
     const { error } = tournamentDraft.id
       ? await db.from("tournaments").update(payload).eq("id", tournamentDraft.id)
       : await db.from("tournaments").insert(payload);
+    if (error) { setSavingTournament(false); setError("Не удалось сохранить турнир: " + error.message); return; }
+    await applyPlacementBonusDeltas(oldPlacements, newPlacements);
+    await Promise.all([loadTournaments(), loadPlayers()]);
     setSavingTournament(false);
-    if (error) { setError("Не удалось сохранить турнир: " + error.message); return; }
-    await loadTournaments();
     setShowTournamentForm(false);
   }
 
   async function deleteTournament(id) {
+    const { data: prev } = await db.from("tournaments").select("first_place_id, second_place_id, third_place_id").eq("id", id).single();
+    if (prev) await applyPlacementBonusDeltas({ 1: prev.first_place_id, 2: prev.second_place_id, 3: prev.third_place_id }, { 1: null, 2: null, 3: null });
     const { error } = await db.from("tournaments").delete().eq("id", id);
     if (error) { setError("Не удалось удалить турнир: " + error.message); return; }
-    await loadTournaments();
+    await Promise.all([loadTournaments(), loadPlayers()]);
     if (selectedTournamentId === id) { setSelectedTournamentId(null); setTab("tournaments"); }
   }
 
@@ -345,7 +374,7 @@ function App() {
 
   if (!CONFIG_OK) return <SetupNeeded />;
 
-  const withRating = players.map((p) => ({ ...p, rating: computeRating(p.wins, p.losses) }));
+  const withRating = players.map((p) => ({ ...p, rating: computeRating(p.wins, p.losses, p.bonus_points) }));
   const ranked = [...withRating].sort((a, b) => b.rating - a.rating);
   const rankedFiltered = ratingFilter === "all" ? ranked : ranked.filter((p) => p.gender === ratingFilter);
 
@@ -555,6 +584,14 @@ function App() {
                   <div style={{ fontSize: 14.5, color: COLORS.creamDim, marginBottom: 4 }}>📅 {formatTournamentDate(selectedTournament.start_time)}</div>
                   <div style={{ fontSize: 14.5, color: COLORS.creamDim, marginBottom: 18 }}>📍 {selectedTournament.location}</div>
                   {selectedTournament.description && <p style={{ fontSize: 15, lineHeight: 1.7, color: COLORS.cream, marginBottom: 22 }}>{selectedTournament.description}</p>}
+                  {(selectedTournament.first_place_id || selectedTournament.second_place_id || selectedTournament.third_place_id) && (
+                    <div style={{ display: "grid", gap: 8, marginBottom: 22 }}>
+                      {[["🥇", selectedTournament.first_place_id], ["🥈", selectedTournament.second_place_id], ["🥉", selectedTournament.third_place_id]].filter(([, id]) => id).map(([medal, id]) => {
+                        const p = players.find((pl) => pl.id === id);
+                        return <div key={id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14.5 }}><span>{medal}</span><span>{p ? p.name : "—"}</span></div>;
+                      })}
+                    </div>
+                  )}
                   <button onClick={() => setShowParticipateModal(true)} style={{ background: COLORS.gold, color: COLORS.bgDark, border: "none", padding: "13px 24px", borderRadius: 9, fontWeight: 700, fontSize: 15 }}>Принять участие</button>
                   {isAdmin && (
                     <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
@@ -579,7 +616,7 @@ function App() {
                   <button key={f.id} onClick={() => setRatingFilter(f.id)} style={{ padding: "7px 14px", borderRadius: 999, border: `1px solid ${ratingFilter === f.id ? COLORS.gold : "#33363C"}`, background: ratingFilter === f.id ? "rgba(176,141,70,0.16)" : "transparent", color: ratingFilter === f.id ? COLORS.goldSoft : COLORS.creamDim, fontSize: 13, fontWeight: 700 }}>{f.label}</button>
                 ))}
               </div>
-              <p style={{ fontSize: 12.5, color: COLORS.creamDim, marginTop: -6, marginBottom: 18 }}>Рейтинг считается автоматически: {BASE_RATING} стартовых очков + {POINTS_PER_WIN} за победу − {POINTS_PER_LOSS} за поражение.</p>
+              <p style={{ fontSize: 12.5, color: COLORS.creamDim, marginTop: -6, marginBottom: 18 }}>Рейтинг считается автоматически: {BASE_RATING} стартовых очков + {POINTS_PER_WIN} за победу − {POINTS_PER_LOSS} за поражение, плюс бонус за призовые места турниров (+{PLACE_BONUS[1]} / +{PLACE_BONUS[2]} / +{PLACE_BONUS[3]} за 1-2-3 место).</p>
               {rankedFiltered.length === 0 ? (
                 <EmptyState onAdd={() => setTab("players")} label="Пока никого в этой категории." buttonLabel="Перейти к игрокам" />
               ) : (
@@ -634,8 +671,11 @@ function App() {
               </div>
               <div style={{ background: COLORS.feltDark, borderRadius: 8, padding: "10px 12px", fontSize: 13, color: COLORS.creamDim, display: "flex", justifyContent: "space-between" }}>
                 <span>Игр: {Number(playerDraft.wins) + Number(playerDraft.losses)}</span>
-                <span style={{ color: COLORS.goldSoft, fontWeight: 700 }}>Рейтинг: {computeRating(playerDraft.wins, playerDraft.losses)}</span>
+                <span style={{ color: COLORS.goldSoft, fontWeight: 700 }}>Рейтинг: {computeRating(playerDraft.wins, playerDraft.losses, playerDraft.bonus_points)}</span>
               </div>
+              {!!playerDraft.bonus_points && (
+                <p style={{ fontSize: 12, color: COLORS.creamDim, margin: 0 }}>Бонус за призовые места: +{playerDraft.bonus_points} (начисляется автоматически из турниров, вручную не редактируется).</p>
+              )}
             </div>
             <button disabled={!playerDraft.name.trim() || savingPlayer} onClick={saveDraftPlayer} style={{ marginTop: 20, width: "100%", background: !playerDraft.name.trim() ? "#33363C" : COLORS.gold, color: COLORS.bgDark, border: "none", borderRadius: 9, padding: "11px 0", fontWeight: 700, fontSize: 14.5, opacity: savingPlayer ? 0.7 : 1 }}>
               {savingPlayer ? "Сохранение…" : "Сохранить игрока"}
@@ -677,6 +717,16 @@ function App() {
                 </div>
               </Field>
               <Field label="Описание"><textarea value={tournamentDraft.description} onChange={(e) => setTournamentDraft({ ...tournamentDraft, description: e.target.value })} /></Field>
+              <Field label="Призовые места (баллы начисляются автоматически: +100 / +50 / +30)">
+                <div style={{ display: "grid", gap: 8 }}>
+                  {[["first_place_id", "🥇 1 место"], ["second_place_id", "🥈 2 место"], ["third_place_id", "🥉 3 место"]].map(([key, label]) => (
+                    <select key={key} value={tournamentDraft[key] || ""} onChange={(e) => setTournamentDraft({ ...tournamentDraft, [key]: e.target.value || null })} style={{ background: "#0F1013", border: "1px solid #25272C", color: COLORS.cream, borderRadius: 8, padding: "9px 12px", fontSize: 14, width: "100%" }}>
+                      <option value="">{label} — не выбрано</option>
+                      {[...players].sort((a, b) => a.name.localeCompare(b.name, "ru")).map((p) => <option key={p.id} value={p.id}>{label}: {p.name}</option>)}
+                    </select>
+                  ))}
+                </div>
+              </Field>
             </div>
             <button disabled={!tournamentDraft.title.trim() || !tournamentDraft.start_time || savingTournament} onClick={saveDraftTournament} style={{ marginTop: 20, width: "100%", background: (!tournamentDraft.title.trim() || !tournamentDraft.start_time) ? "#33363C" : COLORS.gold, color: COLORS.bgDark, border: "none", borderRadius: 9, padding: "11px 0", fontWeight: 700, fontSize: 14.5, opacity: savingTournament ? 0.7 : 1 }}>
               {savingTournament ? "Сохранение…" : "Сохранить турнир"}
