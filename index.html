@@ -70,6 +70,29 @@ function emptyPlayer() {
   return { id: null, name: "", gender: "M", wins: 0, losses: 0, city: "Югорск", photo: null };
 }
 
+const VK_CONTACT_URL = "https://vk.ru/akramkhon";
+const TG_CONTACT_URL = "https://t.me/khayr_kadi";
+
+const TOURNAMENT_STATUSES = [
+  { id: "open", label: "Идёт набор участников", color: "#7FB88A" },
+  { id: "closed", label: "Набор завершён", color: "#B08D46" },
+  { id: "live", label: "Идёт сейчас", color: "#C1595A" },
+  { id: "finished", label: "Турнир завершён", color: "#8B8E94" },
+];
+function statusMeta(id) { return TOURNAMENT_STATUSES.find((s) => s.id === id) || TOURNAMENT_STATUSES[0]; }
+
+function emptyTournament() {
+  return { id: null, title: "", description: "", start_time: "", location: "бар «Легенды», г. Югорск", status: "open" };
+}
+
+function formatTournamentDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const datePart = d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  const timePart = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  return `${datePart}, ${timePart}`;
+}
+
 function fileToCompressedDataUrl(file, size = 320, quality = 0.82) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -178,6 +201,13 @@ function App() {
   const [savingPlayer, setSavingPlayer] = useState(false);
   const fileInputRef = useRef(null);
 
+  const [tournaments, setTournaments] = useState([]);
+  const [selectedTournamentId, setSelectedTournamentId] = useState(null);
+  const [showTournamentForm, setShowTournamentForm] = useState(false);
+  const [tournamentDraft, setTournamentDraft] = useState(emptyTournament());
+  const [savingTournament, setSavingTournament] = useState(false);
+  const [showParticipateModal, setShowParticipateModal] = useState(false);
+
   async function loadFederation() {
     const { data, error } = await db.from("federation_info").select("*").eq("id", 1).single();
     if (error) { setError("Не удалось загрузить сведения о федерации."); return; }
@@ -190,6 +220,12 @@ function App() {
     setPlayers(data || []);
   }
 
+  async function loadTournaments() {
+    const { data, error } = await db.from("tournaments").select("*").order("start_time");
+    if (error) { setError("Не удалось загрузить турниры."); return; }
+    setTournaments(data || []);
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -197,7 +233,7 @@ function App() {
         setIsAdmin(!!data.session);
       } catch (e) {}
       try {
-        await Promise.all([loadFederation(), loadPlayers()]);
+        await Promise.all([loadFederation(), loadPlayers(), loadTournaments()]);
       } catch (e) {
         setError("Не удалось связаться с базой данных: " + (e && e.message ? e.message : String(e)));
       }
@@ -210,6 +246,7 @@ function App() {
       .channel("public-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "players" }, () => loadPlayers())
       .on("postgres_changes", { event: "*", schema: "public", table: "federation_info" }, () => loadFederation())
+      .on("postgres_changes", { event: "*", schema: "public", table: "tournaments" }, () => loadTournaments())
       .subscribe();
 
     return () => { authSub.subscription.unsubscribe(); db.removeChannel(channel); };
@@ -262,6 +299,33 @@ function App() {
     await loadPlayers();
   }
 
+  function openNewTournamentForm() { setTournamentDraft(emptyTournament()); setShowTournamentForm(true); }
+  function openEditTournamentForm(t) { setTournamentDraft({ ...t, start_time: t.start_time ? t.start_time.slice(0, 16) : "" }); setShowTournamentForm(true); }
+
+  async function saveDraftTournament() {
+    if (!tournamentDraft.title.trim() || !tournamentDraft.start_time) return;
+    setSavingTournament(true);
+    const payload = {
+      title: tournamentDraft.title, description: tournamentDraft.description,
+      start_time: new Date(tournamentDraft.start_time).toISOString(),
+      location: tournamentDraft.location, status: tournamentDraft.status,
+    };
+    const { error } = tournamentDraft.id
+      ? await db.from("tournaments").update(payload).eq("id", tournamentDraft.id)
+      : await db.from("tournaments").insert(payload);
+    setSavingTournament(false);
+    if (error) { setError("Не удалось сохранить турнир: " + error.message); return; }
+    await loadTournaments();
+    setShowTournamentForm(false);
+  }
+
+  async function deleteTournament(id) {
+    const { error } = await db.from("tournaments").delete().eq("id", id);
+    if (error) { setError("Не удалось удалить турнир: " + error.message); return; }
+    await loadTournaments();
+    if (selectedTournamentId === id) { setSelectedTournamentId(null); setTab("tournaments"); }
+  }
+
   async function saveFed() {
     const { id, updated_at, ...payload } = fedDraft;
     const { error } = await db.from("federation_info").update(payload).eq("id", 1);
@@ -280,8 +344,16 @@ function App() {
     { id: "home", label: "Главная", icon: "🎲" },
     { id: "federation", label: "Федерация", icon: "ℹ️" },
     { id: "players", label: "Игроки", icon: "👥" },
+    { id: "tournaments", label: "Турниры", icon: "📅" },
     { id: "rating", label: "Рейтинг", icon: "🏆" },
   ];
+  const activeNavId = tab === "tournament-detail" ? "tournaments" : tab;
+
+  const sortedTournaments = [...tournaments].sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+  const nextTournament = sortedTournaments.find((t) => t.status === "open" || t.status === "live")
+    || sortedTournaments.find((t) => new Date(t.start_time) >= new Date())
+    || sortedTournaments[sortedTournaments.length - 1];
+  const selectedTournament = tournaments.find((t) => t.id === selectedTournamentId) || null;
 
   return (
     <div style={{ minHeight: "100vh", background: COLORS.bgDark, color: COLORS.cream }}>
@@ -293,7 +365,7 @@ function App() {
           </div>
           <nav style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
             {navItems.map((n) => (
-              <button key={n.id} onClick={() => setTab(n.id)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "none", background: tab === n.id ? COLORS.felt : "transparent", color: tab === n.id ? COLORS.goldSoft : COLORS.creamDim, fontSize: 14, fontWeight: 600 }}>
+              <button key={n.id} onClick={() => setTab(n.id)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "none", background: activeNavId === n.id ? COLORS.felt : "transparent", color: activeNavId === n.id ? COLORS.goldSoft : COLORS.creamDim, fontSize: 14, fontWeight: 600 }}>
                 <span>{n.icon}</span>{n.label}
               </button>
             ))}
@@ -338,6 +410,18 @@ function App() {
                       <button onClick={() => setTab("rating")} style={{ background: COLORS.gold, color: COLORS.bgDark, border: "none", padding: "12px 22px", borderRadius: 9, fontWeight: 700, fontSize: 14.5 }}>Смотреть рейтинг</button>
                       <button onClick={() => setTab("players")} style={{ background: "transparent", color: COLORS.cream, border: "1px solid #33363C", padding: "12px 22px", borderRadius: 9, fontWeight: 600, fontSize: 14.5 }}>Все игроки</button>
                     </div>
+                    {nextTournament && (
+                      <div onClick={() => { setSelectedTournamentId(nextTournament.id); setTab("tournament-detail"); }} className="card-hover" style={{ marginTop: 20, cursor: "pointer", background: "#141518", border: "1px solid #25272C", borderRadius: 12, padding: "16px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, maxWidth: 500 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: statusMeta(nextTournament.status).color, background: "rgba(176,141,70,0.1)", borderRadius: 999, padding: "3px 9px" }}>{statusMeta(nextTournament.status).label}</span>
+                          </div>
+                          <div style={{ fontWeight: 700, fontSize: 15 }}>{nextTournament.title}</div>
+                          <div style={{ fontSize: 12.5, color: COLORS.creamDim, marginTop: 2 }}>{formatTournamentDate(nextTournament.start_time)}</div>
+                        </div>
+                        <span style={{ color: COLORS.goldSoft, fontSize: 20, flexShrink: 0 }}>→</span>
+                      </div>
+                    )}
                   </div>
                   <div style={{ aspectRatio: "1", borderRadius: 14, background: COLORS.felt, border: "1px solid #25272C", boxShadow: "inset 0 0 0 1px rgba(217,188,124,0.06)", display: "grid", gridTemplateRows: "1fr auto 1fr", overflow: "hidden", padding: 16 }}>
                     <div style={{ display: "flex", gap: 3 }}>{new Array(6).fill(0).map((_, i) => <div key={i} style={{ flex: 1, clipPath: "polygon(50% 100%, 22% 0, 78% 0)", background: i % 2 === 0 ? COLORS.gold : COLORS.woodMid, opacity: i % 2 === 0 ? 0.85 : 0.45 }} />)}</div>
@@ -433,6 +517,65 @@ function App() {
             </section>
           )}
 
+          {tab === "tournaments" && (
+            <section className="fade-in" style={{ maxWidth: 760, margin: "0 auto", padding: "44px 24px 80px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                <SectionLabel icon="📅">Турниры</SectionLabel>
+                {isAdmin && <button onClick={openNewTournamentForm} style={{ background: COLORS.gold, color: COLORS.bgDark, border: "none", borderRadius: 9, padding: "10px 16px", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 6, marginBottom: 22, height: "fit-content" }}>＋ Добавить турнир</button>}
+              </div>
+              {sortedTournaments.length === 0 ? (
+                <EmptyState onAdd={isAdmin ? openNewTournamentForm : null} label="Турниры ещё не добавлены." buttonLabel="Добавить первый турнир" />
+              ) : (
+                <div style={{ display: "grid", gap: 12 }}>
+                  {sortedTournaments.map((t) => (
+                    <div key={t.id} className="card-hover" style={{ background: "#141518", border: "1px solid #25272C", borderRadius: 14, padding: "18px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, cursor: "pointer" }} onClick={() => { setSelectedTournamentId(t.id); setTab("tournament-detail"); }}>
+                      <div style={{ minWidth: 0 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: statusMeta(t.status).color, background: "rgba(176,141,70,0.1)", borderRadius: 999, padding: "3px 9px" }}>{statusMeta(t.status).label}</span>
+                        <div style={{ fontWeight: 700, fontSize: 16, marginTop: 8 }}>{t.title}</div>
+                        <div style={{ fontSize: 13, color: COLORS.creamDim, marginTop: 3 }}>{formatTournamentDate(t.start_time)} · {t.location}</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                        {isAdmin && (
+                          <div style={{ display: "flex", gap: 8 }} onClick={(e) => e.stopPropagation()}>
+                            <IconButton onClick={() => openEditTournamentForm(t)} title="Редактировать">✎</IconButton>
+                            <IconButton onClick={() => deleteTournament(t.id)} title="Удалить" danger>🗑</IconButton>
+                          </div>
+                        )}
+                        <span style={{ color: COLORS.goldSoft, fontSize: 18 }}>→</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {tab === "tournament-detail" && (
+            selectedTournament ? (
+              <section className="fade-in" style={{ maxWidth: 640, margin: "0 auto", padding: "44px 24px 80px" }}>
+                <button onClick={() => setTab("tournaments")} style={{ background: "transparent", border: "none", color: COLORS.creamDim, fontSize: 13, marginBottom: 18, padding: 0 }}>← Все турниры</button>
+                <div style={{ background: "#141518", border: "1px solid #25272C", borderRadius: 16, padding: 28 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: statusMeta(selectedTournament.status).color, background: "rgba(176,141,70,0.1)", borderRadius: 999, padding: "4px 11px" }}>{statusMeta(selectedTournament.status).label}</span>
+                  <h1 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 800, fontSize: 26, margin: "14px 0 8px" }}>{selectedTournament.title}</h1>
+                  <div style={{ fontSize: 14.5, color: COLORS.creamDim, marginBottom: 4 }}>📅 {formatTournamentDate(selectedTournament.start_time)}</div>
+                  <div style={{ fontSize: 14.5, color: COLORS.creamDim, marginBottom: 18 }}>📍 {selectedTournament.location}</div>
+                  {selectedTournament.description && <p style={{ fontSize: 15, lineHeight: 1.7, color: COLORS.cream, marginBottom: 22 }}>{selectedTournament.description}</p>}
+                  <button onClick={() => setShowParticipateModal(true)} style={{ background: COLORS.gold, color: COLORS.bgDark, border: "none", padding: "13px 24px", borderRadius: 9, fontWeight: 700, fontSize: 15 }}>Принять участие</button>
+                  {isAdmin && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+                      <IconButton onClick={() => openEditTournamentForm(selectedTournament)} title="Редактировать">✎ Редактировать</IconButton>
+                      <IconButton onClick={() => deleteTournament(selectedTournament.id)} title="Удалить" danger>🗑 Удалить</IconButton>
+                    </div>
+                  )}
+                </div>
+              </section>
+            ) : (
+              <section className="fade-in" style={{ maxWidth: 640, margin: "0 auto", padding: "44px 24px 80px" }}>
+                <EmptyState onAdd={() => setTab("tournaments")} label="Турнир не найден." buttonLabel="Все турниры" />
+              </section>
+            )
+          )}
+
           {tab === "rating" && (
             <section className="fade-in" style={{ maxWidth: 760, margin: "0 auto", padding: "44px 24px 80px" }}>
               <SectionLabel icon="🏆">Рейтинг игроков</SectionLabel>
@@ -506,6 +649,47 @@ function App() {
         </div>
       )}
 
+      {showParticipateModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(6,6,8,0.75)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 70 }} onClick={() => setShowParticipateModal(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ background: "#141518", border: `1px solid ${COLORS.gold}`, borderRadius: 16, width: "100%", maxWidth: 360, padding: 24 }}>
+            <h3 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 800, fontSize: 19, margin: "0 0 6px" }}>Как с вами связаться?</h3>
+            <p style={{ fontSize: 12.5, color: COLORS.creamDim, lineHeight: 1.5, marginBottom: 18 }}>Выберите удобный способ — откроется чат с организатором турнира.</p>
+            <div style={{ display: "grid", gap: 10 }}>
+              <a href={VK_CONTACT_URL} target="_blank" rel="noopener noreferrer" onClick={() => setShowParticipateModal(false)} style={{ display: "block", textAlign: "center", background: COLORS.gold, color: COLORS.bgDark, border: "none", borderRadius: 8, padding: "11px 0", fontWeight: 700, fontSize: 14.5, textDecoration: "none" }}>ВКонтакте</a>
+              <a href={TG_CONTACT_URL} target="_blank" rel="noopener noreferrer" onClick={() => setShowParticipateModal(false)} style={{ display: "block", textAlign: "center", background: "transparent", color: COLORS.cream, border: "1px solid #33363C", borderRadius: 8, padding: "11px 0", fontWeight: 700, fontSize: 14.5, textDecoration: "none" }}>Telegram</a>
+            </div>
+            <button onClick={() => setShowParticipateModal(false)} style={{ marginTop: 14, width: "100%", background: "transparent", color: COLORS.creamDim, border: "none", fontSize: 13 }}>Отмена</button>
+          </div>
+        </div>
+      )}
+
+      {showTournamentForm && isAdmin && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(6,6,8,0.75)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 60 }} onClick={() => setShowTournamentForm(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ background: "#141518", border: `1px solid ${COLORS.gold}`, borderRadius: 16, width: "100%", maxWidth: 420, maxHeight: "88vh", overflowY: "auto", padding: 24 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+              <h3 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 800, fontSize: 20, margin: 0 }}>{tournamentDraft.id ? "Изменить турнир" : "Новый турнир"}</h3>
+              <button onClick={() => setShowTournamentForm(false)} style={{ background: "transparent", border: "none", color: COLORS.creamDim, fontSize: 18 }}>✕</button>
+            </div>
+            <div style={{ display: "grid", gap: 12 }}>
+              <Field label="Название турнира"><input value={tournamentDraft.title} onChange={(e) => setTournamentDraft({ ...tournamentDraft, title: e.target.value })} placeholder="Например, Третий турнир Федерации" /></Field>
+              <Field label="Дата и время"><input type="datetime-local" value={tournamentDraft.start_time} onChange={(e) => setTournamentDraft({ ...tournamentDraft, start_time: e.target.value })} /></Field>
+              <Field label="Место проведения"><input value={tournamentDraft.location} onChange={(e) => setTournamentDraft({ ...tournamentDraft, location: e.target.value })} /></Field>
+              <Field label="Статус">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {TOURNAMENT_STATUSES.map((s) => (
+                    <button key={s.id} type="button" onClick={() => setTournamentDraft({ ...tournamentDraft, status: s.id })} style={{ padding: "9px 6px", borderRadius: 8, border: `1px solid ${tournamentDraft.status === s.id ? COLORS.gold : "#25272C"}`, background: tournamentDraft.status === s.id ? "rgba(176,141,70,0.16)" : "#0F1013", color: tournamentDraft.status === s.id ? COLORS.goldSoft : COLORS.creamDim, fontSize: 12.5, fontWeight: 600 }}>{s.label}</button>
+                  ))}
+                </div>
+              </Field>
+              <Field label="Описание"><textarea value={tournamentDraft.description} onChange={(e) => setTournamentDraft({ ...tournamentDraft, description: e.target.value })} /></Field>
+            </div>
+            <button disabled={!tournamentDraft.title.trim() || !tournamentDraft.start_time || savingTournament} onClick={saveDraftTournament} style={{ marginTop: 20, width: "100%", background: (!tournamentDraft.title.trim() || !tournamentDraft.start_time) ? "#33363C" : COLORS.gold, color: COLORS.bgDark, border: "none", borderRadius: 9, padding: "11px 0", fontWeight: 700, fontSize: 14.5, opacity: savingTournament ? 0.7 : 1 }}>
+              {savingTournament ? "Сохранение…" : "Сохранить турнир"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {showAuthModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(6,6,8,0.75)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 70 }} onClick={() => setShowAuthModal(false)}>
           <div onClick={(e) => e.stopPropagation()} className="fade-in" style={{ background: "#141518", border: `1px solid ${COLORS.gold}`, borderRadius: 16, width: "100%", maxWidth: 360, padding: 24 }}>
@@ -538,4 +722,3 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
 </body>
 </html>
- 
