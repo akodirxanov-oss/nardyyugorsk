@@ -28,6 +28,13 @@
   @keyframes fadeIn{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;} }
   .card-hover{ transition: transform .18s ease, border-color .18s ease; }
   .card-hover:hover{ transform: translateY(-3px); border-color: var(--brass); }
+  @media (max-width: 760px){
+    .hero-grid{ grid-template-columns: 1fr !important; padding-top: 44px !important; }
+    .hero-grid > div:last-child{ max-width: 380px; margin: 0 auto; width: 100%; }
+    nav.main-nav{ gap: 2px !important; }
+    nav.main-nav button{ padding: 7px 9px !important; font-size: 13px !important; }
+    nav.main-nav button span:first-child{ display: none; }
+  }
 </style>
 </head>
 <body>
@@ -365,7 +372,7 @@ function App() {
             <div style={{ width: 36, height: 36, borderRadius: 9, background: `linear-gradient(135deg, ${COLORS.gold}, ${COLORS.woodMid2})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🎲</div>
             <span style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 800, fontSize: 17, letterSpacing: "-0.01em" }}>Нарды Югорска</span>
           </div>
-          <nav style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+          <nav className="main-nav" style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
             {navItems.map((n) => (
               <button key={n.id} onClick={() => setTab(n.id)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "none", background: activeNavId === n.id ? COLORS.felt : "transparent", color: activeNavId === n.id ? COLORS.goldSoft : COLORS.creamDim, fontSize: 14, fontWeight: 600 }}>
                 <span>{n.icon}</span>{n.label}
@@ -403,7 +410,7 @@ function App() {
           {tab === "home" && (
             <div className="fade-in">
               <section style={{ position: "relative", overflow: "hidden", background: `radial-gradient(ellipse at 30% 20%, ${COLORS.woodMid2} 0%, ${COLORS.bgDark} 65%)` }}>
-                <div style={{ maxWidth: 1040, margin: "0 auto", padding: "76px 24px 48px", display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 30, alignItems: "center" }}>
+                <div className="hero-grid" style={{ maxWidth: 1040, margin: "0 auto", padding: "76px 24px 48px", display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 30, alignItems: "center" }}>
                   <div>
                     <p style={{ color: COLORS.goldSoft, fontSize: 14, fontWeight: 600, marginBottom: 14 }}>Ханты-Мансийский автономный округ — Югра</p>
                     <h1 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 800, fontSize: "clamp(32px, 5vw, 50px)", lineHeight: 1.05, letterSpacing: "-0.02em", margin: "0 0 18px" }}>{fed.name}</h1>
