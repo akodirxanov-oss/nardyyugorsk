@@ -419,18 +419,6 @@ function App() {
                       <button onClick={() => setTab("rating")} style={{ background: COLORS.gold, color: COLORS.bgDark, border: "none", padding: "12px 22px", borderRadius: 9, fontWeight: 700, fontSize: 14.5 }}>Смотреть рейтинг</button>
                       <button onClick={() => setTab("players")} style={{ background: "transparent", color: COLORS.cream, border: "1px solid #33363C", padding: "12px 22px", borderRadius: 9, fontWeight: 600, fontSize: 14.5 }}>Все игроки</button>
                     </div>
-                    {nextTournament && (
-                      <div onClick={() => { setSelectedTournamentId(nextTournament.id); setTab("tournament-detail"); }} className="card-hover" style={{ marginTop: 20, cursor: "pointer", background: "#141518", border: "1px solid #25272C", borderRadius: 12, padding: "16px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, maxWidth: 500 }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                            <span style={{ fontSize: 11, fontWeight: 700, color: statusMeta(nextTournament.status).color, background: "rgba(176,141,70,0.1)", borderRadius: 999, padding: "3px 9px" }}>{statusMeta(nextTournament.status).label}</span>
-                          </div>
-                          <div style={{ fontWeight: 700, fontSize: 15 }}>{nextTournament.title}</div>
-                          <div style={{ fontSize: 12.5, color: COLORS.creamDim, marginTop: 2 }}>{formatTournamentDate(nextTournament.start_time)}</div>
-                        </div>
-                        <span style={{ color: COLORS.goldSoft, fontSize: 20, flexShrink: 0 }}>→</span>
-                      </div>
-                    )}
                   </div>
                   <div style={{ aspectRatio: "1", borderRadius: 14, overflow: "hidden", border: "1px solid #25272C", boxShadow: "inset 0 0 0 1px rgba(217,188,124,0.06)" }}>
                     <img src={HERO_IMAGE} alt="Игра в нарды" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
@@ -438,7 +426,7 @@ function App() {
                 </div>
                 <PointsStrip />
               </section>
-              <section style={{ maxWidth: 1040, margin: "0 auto", padding: "50px 24px" }}>
+              <section style={{ maxWidth: 1040, margin: "0 auto", padding: "50px 24px 110px" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16 }}>
                   {[
                     { label: "Игроков в федерации", value: fed.member_count ?? players.length },
@@ -721,6 +709,19 @@ function App() {
       )}
 
       {fed && <footer style={{ borderTop: "1px solid #25272C", padding: "22px 24px", textAlign: "center", fontSize: 12.5, color: COLORS.creamDim }}>{fed.name} · {fed.address}</footer>}
+
+      {tab === "home" && nextTournament && (
+        <div onClick={() => { setSelectedTournamentId(nextTournament.id); setTab("tournament-detail"); }} style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", bottom: 18, zIndex: 30, cursor: "pointer", width: "calc(100% - 32px)", maxWidth: 480, background: "#1A1C20", border: `1px solid ${COLORS.gold}`, borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, boxShadow: "0 10px 30px rgba(0,0,0,0.45)" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: statusMeta(nextTournament.status).color, background: "rgba(176,141,70,0.14)", borderRadius: 999, padding: "3px 9px" }}>{statusMeta(nextTournament.status).label}</span>
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{nextTournament.title}</div>
+            <div style={{ fontSize: 12, color: COLORS.creamDim, marginTop: 2 }}>{formatTournamentDate(nextTournament.start_time)}</div>
+          </div>
+          <span style={{ color: COLORS.goldSoft, fontSize: 20, flexShrink: 0 }}>→</span>
+        </div>
+      )}
     </div>
   );
 }
