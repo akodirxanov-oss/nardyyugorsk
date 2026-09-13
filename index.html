@@ -223,6 +223,8 @@ function App() {
   const [tournamentDraft, setTournamentDraft] = useState(emptyTournament());
   const [savingTournament, setSavingTournament] = useState(false);
   const [showParticipateModal, setShowParticipateModal] = useState(false);
+  const [tournamentResults, setTournamentResults] = useState([]);
+  const [newResultPlayerId, setNewResultPlayerId] = useState("");
 
   async function loadFederation() {
     const { data, error } = await db.from("federation_info").select("*").eq("id", 1).single();
@@ -242,6 +244,12 @@ function App() {
     setTournaments(data || []);
   }
 
+  async function loadTournamentResults() {
+    const { data, error } = await db.from("tournament_results").select("*");
+    if (error) { setError("Не удалось загрузить результаты турниров."); return; }
+    setTournamentResults(data || []);
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -249,7 +257,7 @@ function App() {
         setIsAdmin(!!data.session);
       } catch (e) {}
       try {
-        await Promise.all([loadFederation(), loadPlayers(), loadTournaments()]);
+        await Promise.all([loadFederation(), loadPlayers(), loadTournaments(), loadTournamentResults()]);
       } catch (e) {
         setError("Не удалось связаться с базой данных: " + (e && e.message ? e.message : String(e)));
       }
@@ -263,6 +271,7 @@ function App() {
       .on("postgres_changes", { event: "*", schema: "public", table: "players" }, () => loadPlayers())
       .on("postgres_changes", { event: "*", schema: "public", table: "federation_info" }, () => loadFederation())
       .on("postgres_changes", { event: "*", schema: "public", table: "tournaments" }, () => loadTournaments())
+      .on("postgres_changes", { event: "*", schema: "public", table: "tournament_results" }, () => loadTournamentResults())
       .subscribe();
 
     return () => { authSub.subscription.unsubscribe(); db.removeChannel(channel); };
@@ -370,6 +379,26 @@ function App() {
     if (selectedTournamentId === id) { setSelectedTournamentId(null); setTab("tournaments"); }
   }
 
+  async function addTournamentResultRow(tournamentId, playerId) {
+    if (!playerId) return;
+    const { error } = await db.from("tournament_results").insert({ tournament_id: tournamentId, player_id: playerId, wins: 0, losses: 0, bonus: 0 });
+    if (error) { setError("Не удалось добавить строку результата: " + error.message); return; }
+    await loadTournamentResults();
+    setNewResultPlayerId("");
+  }
+
+  async function updateTournamentResultRow(id, patch) {
+    const { error } = await db.from("tournament_results").update(patch).eq("id", id);
+    if (error) { setError("Не удалось сохранить результат: " + error.message); return; }
+    await loadTournamentResults();
+  }
+
+  async function deleteTournamentResultRow(id) {
+    const { error } = await db.from("tournament_results").delete().eq("id", id);
+    if (error) { setError("Не удалось удалить строку: " + error.message); return; }
+    await loadTournamentResults();
+  }
+
   async function saveFed() {
     const { id, updated_at, ...payload } = fedDraft;
     const { error } = await db.from("federation_info").update(payload).eq("id", 1);
@@ -391,7 +420,7 @@ function App() {
     { id: "tournaments", label: "Турниры", icon: "📅" },
     { id: "rating", label: "Рейтинг", icon: "🏆" },
   ];
-  const activeNavId = tab === "tournament-detail" ? "tournaments" : tab;
+  const activeNavId = (tab === "tournament-detail" || tab === "tournament-results") ? "tournaments" : tab;
 
   const sortedTournaments = [...tournaments].sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
   const nextTournament = sortedTournaments.find((t) => t.status === "open" || t.status === "live")
@@ -596,7 +625,10 @@ function App() {
                       })}
                     </div>
                   )}
-                  <button onClick={() => setShowParticipateModal(true)} style={{ background: COLORS.gold, color: COLORS.bgDark, border: "none", padding: "13px 24px", borderRadius: 9, fontWeight: 700, fontSize: 15 }}>Принять участие</button>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <button onClick={() => setShowParticipateModal(true)} style={{ background: COLORS.gold, color: COLORS.bgDark, border: "none", padding: "13px 24px", borderRadius: 9, fontWeight: 700, fontSize: 15 }}>Принять участие</button>
+                    <button onClick={() => setTab("tournament-results")} style={{ background: "transparent", color: COLORS.cream, border: "1px solid #33363C", padding: "13px 24px", borderRadius: 9, fontWeight: 700, fontSize: 15 }}>Показать расчёты и результаты</button>
+                  </div>
                   {isAdmin && (
                     <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
                       <IconButton onClick={() => openEditTournamentForm(selectedTournament)} title="Редактировать">✎ Редактировать</IconButton>
@@ -604,6 +636,84 @@ function App() {
                     </div>
                   )}
                 </div>
+              </section>
+            ) : (
+              <section className="fade-in" style={{ maxWidth: 640, margin: "0 auto", padding: "44px 24px 80px" }}>
+                <EmptyState onAdd={() => setTab("tournaments")} label="Турнир не найден." buttonLabel="Все турниры" />
+              </section>
+            )
+          )}
+
+          {tab === "tournament-results" && (
+            selectedTournament ? (
+              <section className="fade-in" style={{ maxWidth: 820, margin: "0 auto", padding: "44px 24px 80px" }}>
+                <button onClick={() => setTab("tournament-detail")} style={{ background: "transparent", border: "none", color: COLORS.creamDim, fontSize: 13, marginBottom: 18, padding: 0 }}>← {selectedTournament.title}</button>
+                <SectionLabel icon="🧮">Расчёты и результаты — {selectedTournament.title}</SectionLabel>
+                <p style={{ fontSize: 12.5, color: COLORS.creamDim, marginTop: -14, marginBottom: 20 }}>
+                  Очки за игры: {POINTS_PER_WIN} за победу, −{POINTS_PER_LOSS} за поражение. Бонус за место: +{PLACE_BONUS[1]} / +{PLACE_BONUS[2]} / +{PLACE_BONUS[3]} за 1-2-3.
+                </p>
+                {(() => {
+                  const rows = tournamentResults
+                    .filter((r) => r.tournament_id === selectedTournament.id)
+                    .map((r) => {
+                      const p = players.find((pl) => pl.id === r.player_id);
+                      const gamePoints = Number(r.wins || 0) * POINTS_PER_WIN - Number(r.losses || 0) * POINTS_PER_LOSS;
+                      const total = gamePoints + Number(r.bonus || 0);
+                      return { ...r, playerName: p ? p.name : "Игрок удалён", gamePoints, total };
+                    })
+                    .sort((a, b) => b.total - a.total);
+                  const usedIds = new Set(rows.map((r) => r.player_id));
+                  const availablePlayers = [...players].filter((p) => !usedIds.has(p.id)).sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+                  if (rows.length === 0 && !isAdmin) {
+                    return <EmptyState label="Результаты этого турнира ещё не внесены." buttonLabel={null} />;
+                  }
+                  return (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid #25272C", color: COLORS.creamDim, textAlign: "left" }}>
+                            <th style={{ padding: "8px 10px" }}>Игрок</th>
+                            <th style={{ padding: "8px 10px" }}>Победы</th>
+                            <th style={{ padding: "8px 10px" }}>Поражения</th>
+                            <th style={{ padding: "8px 10px" }}>Очки за игры</th>
+                            <th style={{ padding: "8px 10px" }}>Бонус</th>
+                            <th style={{ padding: "8px 10px" }}>Итого</th>
+                            {isAdmin && <th style={{ padding: "8px 10px" }}></th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r) => (
+                            <tr key={r.id} style={{ borderBottom: "1px solid #1c1e22" }}>
+                              <td style={{ padding: "8px 10px", fontWeight: 600 }}>{r.playerName}</td>
+                              <td style={{ padding: "8px 10px" }}>
+                                {isAdmin ? <input type="number" value={r.wins} onChange={(e) => updateTournamentResultRow(r.id, { wins: parseInt(e.target.value || "0", 10) })} style={{ width: 60 }} /> : r.wins}
+                              </td>
+                              <td style={{ padding: "8px 10px" }}>
+                                {isAdmin ? <input type="number" value={r.losses} onChange={(e) => updateTournamentResultRow(r.id, { losses: parseInt(e.target.value || "0", 10) })} style={{ width: 60 }} /> : r.losses}
+                              </td>
+                              <td style={{ padding: "8px 10px", color: COLORS.creamDim }}>{r.gamePoints >= 0 ? `+${r.gamePoints}` : r.gamePoints}</td>
+                              <td style={{ padding: "8px 10px" }}>
+                                {isAdmin ? <input type="number" value={r.bonus} onChange={(e) => updateTournamentResultRow(r.id, { bonus: parseInt(e.target.value || "0", 10) })} style={{ width: 60 }} /> : (r.bonus ? `+${r.bonus}` : "—")}
+                              </td>
+                              <td style={{ padding: "8px 10px", fontWeight: 700, color: COLORS.goldSoft }}>{r.total >= 0 ? `+${r.total}` : r.total}</td>
+                              {isAdmin && <td style={{ padding: "8px 10px" }}><IconButton onClick={() => deleteTournamentResultRow(r.id)} title="Удалить" danger>🗑</IconButton></td>}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {isAdmin && (
+                        <div style={{ marginTop: 18, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                          <select value={newResultPlayerId} onChange={(e) => setNewResultPlayerId(e.target.value)} style={{ background: "#0F1013", border: "1px solid #25272C", color: COLORS.cream, borderRadius: 8, padding: "9px 12px", fontSize: 14 }}>
+                            <option value="">Выбрать игрока…</option>
+                            {availablePlayers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                          </select>
+                          <button onClick={() => addTournamentResultRow(selectedTournament.id, newResultPlayerId)} disabled={!newResultPlayerId} style={{ background: newResultPlayerId ? COLORS.gold : "#33363C", color: COLORS.bgDark, border: "none", borderRadius: 8, padding: "9px 16px", fontWeight: 700, fontSize: 13.5 }}>＋ Добавить игрока в таблицу</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </section>
             ) : (
               <section className="fade-in" style={{ maxWidth: 640, margin: "0 auto", padding: "44px 24px 80px" }}>
